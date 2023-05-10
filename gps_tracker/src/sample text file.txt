@@ -1,0 +1,17 @@
+GPS fix mode:1, BDS fix mode:1, fix quality:0, satellites tracked:0, gps sates total:0, is fixed:no fix, coordinate:WGS84, Latitude:16.855797, Longitude:96.190878, unit:degree,altitude:0.000000
+
+{
+	"name":	"Jack (\"Bee\") Nimble",
+	"format":	{
+		"type":	"rect",
+		"width":	1920,
+		"height":	1080,
+		"interlace":	false,
+		"frame rate":	24
+	}
+}
+
+uart received data,length:48,data:{"status":true,"temperature":20,"humidity":39}
+Uart main receive: {"status":true,"temperature":20,"humidity":39}
+
+Data Route : /api/data-manager/post-query-temperature/634791e81a5223717fba8d07?temperature=16.855797&humidity=20&lat=1505872800&lng=1079512119&battery=0&isChangeDown=0
