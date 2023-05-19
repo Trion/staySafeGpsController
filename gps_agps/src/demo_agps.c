@@ -321,8 +321,10 @@ void gps_testTask(void *pData)
     while(!networkFlag)
     {
         Trace(1,"wait for gprs regiter complete");
+        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
         OS_Sleep(2000);
     }
+   
 
     //open GPS hardware(UART2 open either)
     GPS_Init();
@@ -379,7 +381,7 @@ void gps_testTask(void *pData)
     
     Trace(1,"init ok");
 
-    
+    GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
     while(1)
     {
         if(isGpsOn)
@@ -422,6 +424,16 @@ void gps_testTask(void *pData)
             uint8_t percent;
             uint16_t v = PM_Voltage(&percent);
             Trace(1,"power:%d %d",v,percent);
+
+            // check power status for charging
+            if(percent<36){
+                Trace(10,"!!LOW POWER PLEASE CHARGE!!");
+                 GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
+                 OS_Sleep(200);
+                 GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
+            }
+            // end power status
+
             memset(buffer,0,sizeof(buffer));
             if(!INFO_GetIMEI(buffer))
                 Assert(false,"NO IMEI");
@@ -434,20 +446,54 @@ void gps_testTask(void *pData)
             GPIO_LEVEL BTN_STATE = 0; // BTN_STATE is SOS BUTTON STATE
             Network_GetActiveStatus(&status); // get active status for gprs network connection
             if(!status){
+                GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                OS_Sleep(200);
+                GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
                 Trace(10,"no internet connection please check"); // add status led here
             }
             GPIO_GetLevel(SOS_BTN,&BTN_STATE);
             Trace(10,"SOS BTN STATE : %d",BTN_STATE);
-            if(BTN_STATE == GPIO_LEVEL_LOW)
-            {
-                // first check gprs(internet) connection
-                if(status)
+            if(isFixed >=3){
+                 if(status)
                 {
+                     GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
                     // gprs connection is pretty fine send data to cloud
                       if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer)) < 0)
                         Trace(1,"send location to server fail");
                       else
                         {
+                            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                            Trace(1,"send location to server success");
+                            Trace(1,"response:%s",buffer);
+                        }
+                } else {
+                    Trace(10,"[SOS] NO INTERNET");
+                    // restart for gprs connection in 1 second
+                    PM_Restart();
+                }
+            PM_ShutDown();
+        } else {
+            Trace(10,"NO FIX");
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+            OS_Sleep(400);
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+        }
+        
+            /*
+            // v 1.1 sos button click event
+            if(BTN_STATE == GPIO_LEVEL_LOW)
+            {
+                 GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                // first check gprs(internet) connection
+                if(status)
+                {
+
+                    // gprs connection is pretty fine send data to cloud
+                      if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer)) < 0)
+                        Trace(1,"send location to server fail");
+                      else
+                        {
+                            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
                             Trace(1,"send location to server success");
                             Trace(1,"response:%s",buffer);
                         }
@@ -457,8 +503,10 @@ void gps_testTask(void *pData)
                     PM_Restart();
                 }
             } 
+            // v 1.1 button click 
+            */
         }
-        OS_Sleep(300);
+    OS_Sleep(500);
     }
 }
 
@@ -511,7 +559,7 @@ void gps_MainTask(void *pData)
 
     OS_CreateTask(gps_testTask,
             NULL, NULL, MAIN_TASK_STACK_SIZE, MAIN_TASK_PRIORITY, 0, 0, MAIN_TASK_NAME);
-    OS_StartCallbackTimer(gpsTaskHandle,1000,power_status_led,NULL);
+   // OS_StartCallbackTimer(gpsTaskHandle,1000,power_status_led,NULL);
     //Wait event
     while(1)
     {
