@@ -21,6 +21,7 @@ LOCAL_ADD_INCLUDE := include \
                      include/std_inc \
                      include/api_inc \
                      libs/gps/minmea/src \
+                     libs/cjson/src \
 
                     
 # `yes` if have submodule or left empty  or `no`

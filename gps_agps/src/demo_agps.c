@@ -18,6 +18,8 @@
 #include "api_network.h"
 #include "api_lbs.h"
 #include "api_hal_gpio.h"
+#include "sdk_init.h"
+
 
 
 /***
@@ -25,9 +27,15 @@
  * @Trion (NYEIN CHAN KO)
  * cell center info gps sos emergency alarm device v1.1 upgrade version normal condition
  * 
+ * in v1.4 
+ * 1. add gprs restart btn 
+ * 2. add gps time out state (time out state is counter 99)
  **/
 #define SERVER_IP "137.184.127.105" // demo server ip , for production change here
 #define SERVER_PORT 3002
+
+#define CELL_TOWER_SERVER "api.mylnikov.org"
+#define CELL_TOWER_PORT " "   
 
 #define GPS_NMEA_LOG_FILE_PATH "/t/gps_nmea.log"
 
@@ -40,10 +48,31 @@
 static HANDLE gpsTaskHandle = NULL;
 bool isGpsOn = true;
 bool networkFlag = false;
+bool sos_btn_event = false; // v1.2
+bool gps_time_out_event = false; // v1.4
 HANDLE semGetCellInfo = NULL;
 
 float latitudeLbs  = 0.0;
 float longitudeLbs = 0.0;
+bool btn_active   = false;
+bool flag_lbs = false;
+
+static int count = 0 ;  // v1.2
+static int btn_press_time = 0;
+uint8_t number;
+
+uint8_t buffer[1024],buffer2[400];
+char cell_tower_path_buffer[1024];
+char buffer_tower[1000];
+int buffer_tower_len = sizeof(buffer_tower);
+int cell_tower_path_buffer_len = sizeof(cell_tower_path_buffer);
+
+
+
+Network_Location_t* location;
+
+uint8_t MCC[5],MNC[3],LAC[5],CELLID[6];
+int lbs_count = 0;
 
 #define SYSTEM_STATUS_LED GPIO_PIN26
 #define UPLOAD_DATA_LED   GPIO_PIN28
@@ -51,6 +80,7 @@ float longitudeLbs = 0.0;
 
 
 // const uint8_t nmea[]="$GNGGA,000021.263,2228.7216,N,11345.5625,E,0,0,,153.3,M,-3.3,M,,*4E\r\n$GPGSA,A,1,,,,,,,,,,,,,,,*1E\r\n$BDGSA,A,1,,,,,,,,,,,,,,,*0F\r\n$GPGSV,1,1,00*79\r\n$BDGSV,1,1,00*68\r\n$GNRMC,000021.263,V,2228.7216,N,11345.5625,E,0.000,0.00,060180,,,N*5D\r\n$GNVTG,0.00,T,,M,0.000,N,0.000,K,N*2C\r\n";
+
 
 void EventDispatch(API_Event_t* pEvent)
 {
@@ -140,41 +170,51 @@ void EventDispatch(API_Event_t* pEvent)
             break;
         case API_EVENT_ID_NETWORK_CELL_INFO:
         {
-            uint8_t number = pEvent->param1;
-            Network_Location_t* location = (Network_Location_t*)pEvent->pParam1;
+            number = pEvent->param1;
+            location = (Network_Location_t*)pEvent->pParam1;
+            int percent =0;
             Trace(2,"network cell infomation,serving cell number:1, neighbor cell number:%d",number-1);
-            
+            Trace(2,"***********************************");
             for(int i=0;i<number;++i)
             {
+                lbs_count++;
+                // snprintf(MCC,sizeof(MCC),"%d%d%d", location[i].sMcc[0], location[i].sMcc[1], location[i].sMcc[2]);
+                // snprintf(MNC,sizeof(MNC),"%d",location[i].sMnc[1]);
+                // snprintf(LAC,sizeof(LAC),"%d",location[i].sLac);
+                // snprintf(CELLID,sizeof(CELLID),"%d",location[i].sCellID);
+                // if(location[i].iRxLev <= -100){
+                //     percent = 0; 
+                // } else if(location[i].iRxLev >= -50){
+                //     percent = 100;
+                // } else {
+                //     percent = 2 * (location[i].iRxLev + 100);
+                // }
                 Trace(2,"cell %d info:%d%d%d,%d%d%d,%d,%d,%d,%d,%d,%d",i,
                 location[i].sMcc[0], location[i].sMcc[1], location[i].sMcc[2], 
                 location[i].sMnc[0], location[i].sMnc[1], location[i].sMnc[2],
                 location[i].sLac, location[i].sCellID, location[i].iBsic,
-                location[i].iRxLev, location[i].iRxLevSub, location[i].nArfcn);
+                percent, location[i].iRxLevSub, location[i].nArfcn);
+                Trace(10,"COUNT%d",lbs_count);
+                snprintf(cell_tower_path_buffer,cell_tower_path_buffer_len,"/geolocation/cell?v=1.1&data=open&mcc=%d%d%d&mnc=%d&lac=%d&cellid=%d", location[i].sMcc[0],location[i].sMcc[1], location[i].sMcc[2],location[i].sMnc[1],location[i].sLac,location[i].sCellID);
+                Trace(10,cell_tower_path_buffer);
             }
 
-            if(!LBS_GetLocation(location,number,15,&longitudeLbs,&latitudeLbs))
-                Trace(1,"===LBS get location fail===");
-            else
-                Trace(1,"===LBS get location success, latitude:%f,longitude:%f===",latitudeLbs,longitudeLbs);
-            if((latitudeLbs == 0) &&(longitudeLbs == 0))//not get location from server, try again
-            {
-                if(++lbsCount>6)
+
+
+            if(++lbsCount>5) // change counting time to 3
                 {
                     lbsCount = 0;
                     Trace(1,"try 6 times to get location from lbs but fail!!");
                     OS_ReleaseSemaphore(semGetCellInfo);
                     break;
                 }
-                if(!Network_GetCellInfoRequst())
-                {
+                 if(!Network_GetCellInfoRequst())
+                 {
                     Trace(1,"network get cell info fail");
-                    OS_ReleaseSemaphore(semGetCellInfo);
-                }
-                break;
-            }
-            OS_ReleaseSemaphore(semGetCellInfo);
-            lbsCount = 0;
+                     OS_ReleaseSemaphore(semGetCellInfo);
+                 }
+                 break;
+            flag_lbs = true;
             break;
         }
 
@@ -184,10 +224,7 @@ void EventDispatch(API_Event_t* pEvent)
 }
 
 
-
-
-
-//http post with no header
+//http post with inteli server 
 int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint16_t bodyLen, char* retBuffer, int bufferLen)
 {
     uint8_t ip[16];
@@ -209,8 +246,10 @@ int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint1
         Trace(2,"malloc fail");
         return -1;
     }
-    snprintf(temp, 2048, "POST %s HTTP/1.1\r\nHost:%s\r\nx-access-token:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2Mzk2ZmZiMWQ5NmZjNzc5MzdhODc0ZWYiLCJpYXQiOjE2NzQ1NTExNjd9.mRkG8ClIa058XoB5opcupGh3WD3Jy65-PpAPIbliC8I\r\n\r\n",
-               path, domain);
+
+    snprintf(temp, 2048, "POST %s HTTP/1.1\r\nHost:%s\r\nx-access-token:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2Mzk2ZmZiMWQ5NmZjNzc5MzdhODc0ZWYiLCJpYXQiOjE2ODQ5ODUyMjB9.U3qHiJ-HuJQDmCYrdew80k9M77nkS042pBNerafmqbs\r\n\r\n",
+                   path, domain);
+   
     char* pData = temp;
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if(fd < 0){
@@ -233,7 +272,7 @@ int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint1
         close(fd);
         return -1;
     }
-    // Trace(2,"socket connect success");
+    Trace(2,"socket connect success");
     Trace(2,"send request:%s",pData);
     ret = send(fd, pData, strlen(pData), 0);
     if(ret < 0){
@@ -302,7 +341,11 @@ int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint1
     return -1;
 }
 
-uint8_t buffer[1024],buffer2[400];
+
+
+
+
+
 
 void gps_testTask(void *pData)
 {
@@ -314,15 +357,39 @@ void gps_testTask(void *pData)
         .pin = GPIO_PIN_SOS,
         .defaultLevel = GPIO_LEVEL_HIGH,
     };
+    GPIO_LEVEL BTN_STATE = 0; // BTN_STATE is SOS BUTTON STATE
     GPIO_Init(SOS_BTN); 
     //wait for gprs register complete
     //The process of GPRS registration network may cause the power supply voltage of GPS to drop, <-- should be carefully
     //which resulting in GPS restart.
     while(!networkFlag)
     {
+        /*
+        * gprs connection restart button for billing state
+        * v1.4 30.5.2023
+        */
+        GPIO_GetLevel(SOS_BTN,&BTN_STATE); 
+        Trace(10,"GPRS BTN STATE : %d",BTN_STATE);
+        if(BTN_STATE == GPIO_LEVEL_LOW){
+         Trace(10,"GPRS CONNECTION RESTART IN 4 SECONDS");
+            GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+            OS_Sleep(1000);
+            GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+            OS_Sleep(1000);
+            GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+            OS_Sleep(1000);
+            GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+            OS_Sleep(1000);
+            PM_Restart();
+        }
         Trace(1,"wait for gprs regiter complete");
         GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
         OS_Sleep(2000);
+      
     }
    
 
@@ -332,6 +399,7 @@ void gps_testTask(void *pData)
     // if(!GPS_ClearLog())
     //     Trace(1,"open file error, please check tf card");
     GPS_Open(NULL);
+
 
     //wait for gps start up, or gps will not response command
     while(gpsInfo->rmc.latitude.value == 0)
@@ -366,14 +434,7 @@ void gps_testTask(void *pData)
 
     //send location to GPS and update brdc GPD file
     Trace(1,"do AGPS now");
-    if(!GPS_AGPS(latitudeLbs,longitudeLbs,0,true))
-    {
-        Trace(1,"agps fail");
-    }
-    else
-    {
-        Trace(1,"do AGPS success");
-    }
+  
 
     //set nmea output interval as 1s
     if(!GPS_SetOutputInterval(1000))
@@ -426,36 +487,110 @@ void gps_testTask(void *pData)
             Trace(1,"power:%d %d",v,percent);
 
             // check power status for charging
-            if(percent<36){
+            if(percent<20){
                 Trace(10,"!!LOW POWER PLEASE CHARGE!!");
                  GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
                  OS_Sleep(200);
                  GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
             }
-            // end power status
-
+      
             memset(buffer,0,sizeof(buffer));
             if(!INFO_GetIMEI(buffer))
                 Assert(false,"NO IMEI");
             Trace(1,"device name:%s",buffer);
-            // snprintf(requestPath,sizeof(buffer2),"/?id=%s&timestamp=%d&lat=%f&lon=%f&speed=%f&bearing=%.1f&altitude=%f&accuracy=%.1f&batt=%.1f",
-            //                                         buffer,time(NULL),latitude,longitude,isFixed*1.0,0.0,gpsInfo->gga.altitude,0.0,percent*1.0);
-            snprintf(requestPath, sizeof(buffer2), "/api/device-control/645c55478a04726ce6575fa1/emergency?lat=%f&lon=%f",latitude, longitude); // device id you can change here
+            if(!Network_GetCellInfoRequst())
+                Trace(1,"network get cell info fail");
+            snprintf(requestPath, sizeof(buffer2), "/api/device-control/645c55478a04726ce6575fa1/alert?lat=%f&lon=%f",latitude, longitude); // device id you can change here
             // check internet connection every second
             uint8_t status;
             GPIO_LEVEL BTN_STATE = 0; // BTN_STATE is SOS BUTTON STATE
+            GPIO_GetLevel(SOS_BTN,&BTN_STATE);  //v1.4  add gprs restart connection state
+            Trace(10,"SOS BTN STATE : %d",BTN_STATE);
             Network_GetActiveStatus(&status); // get active status for gprs network connection
             if(!status){
                 GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
                 OS_Sleep(200);
                 GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
                 Trace(10,"no internet connection please check"); // add status led here
-            }
-            GPIO_GetLevel(SOS_BTN,&BTN_STATE);
-            Trace(10,"SOS BTN STATE : %d",BTN_STATE);
-            if(isFixed >=3){
+            Trace(10,"GPRS BTN STATE : %d",BTN_STATE);
+            if(BTN_STATE == GPIO_LEVEL_LOW){
+                OS_Sleep(2000);
+                Trace(10,"GPRS CONNECTION RESTART IN 4 SECONDS");
+                GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
+                GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                OS_Sleep(1000);
+                GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
+                GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                OS_Sleep(1000);
+                GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
+                GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                OS_Sleep(1000);
+                GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
+                GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                OS_Sleep(1000);
+                PM_Restart();
+        }       
+    }
+        /**
+        * cell tower location finder
+        * cell tower triangulation (circule union point)
+        * https://api.mylnikov.org/geolocation/cell?v=1.1&data=open&mcc=414&mnc=1&lac=310&cellid=16851
+        * if(Http_Get(SERVER_IP,SERVER_PORT,SERVER_PATH,buffer,&len) < 0)
+        **/
+
+                
+             
+                 
+           
+        
+        /**
+         * LONG PRESS EVENT
+         * 
+         **/
+        if(BTN_STATE == GPIO_LEVEL_HIGH)
+             btn_active = true;  
+        
+
+        // END LONG PERSS EVNET
+        if(BTN_STATE == GPIO_LEVEL_LOW){
+           clock_t timeStart = clock();
+           btn_press_time++;
+          // Trace(12,"loop test spent time:%d,press time:%d",(int)((timeEnd-timeStart)/CLOCKS_PER_MSEC),btn_press_time);
+            //PM_SleepMode(false); --> 1.3
+           PM_SetSysMinFreq(PM_SYS_FREQ_312M); // high performance --> v1.4
+           sos_btn_event = true;
+             clock_t timeEnd   = clock();
+         
+        } else {
+            // count++;
+            // if(count == 2){
+            // //send to UART1
+            // snprintf(buffer,sizeof(buffer),"close");
+            // UART_Write(UART1,buffer,strlen(buffer));
+            // UART_Write(UART1,"\r\n\r\n",4);
+            // }
+        }
+        // v 1.3 stand by mode when btn pressed , finding gps signal , gps signal is found send gps data to cloud.
+        if(sos_btn_event == true){ 
+                if(Http_Get(CELL_TOWER_SERVER,NULL,cell_tower_path_buffer,buffer_tower,buffer_tower_len)<0) 
+                   {
+                    Trace(1,"HTTP GET FAIL");
+                   }
+                   else {
+                    Trace(1, "HTTP GET SUCCESS,ret: %s",buffer_tower);
+                     
+                   }
+           
+            if((latitude == 0.00 && longitude == 0.00)||(latitude == 90.0 && longitude == 0.00)){
+            Trace(10,"GPS ERROR");
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+            OS_Sleep(100);
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+           } else {
+            if(isFixed >=2){
                  if(status)
-                {
+                {   
+                    count = 0; // v1.4 set gps time state to 0
                      GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
                     // gprs connection is pretty fine send data to cloud
                       if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer)) < 0)
@@ -463,52 +598,147 @@ void gps_testTask(void *pData)
                       else
                         {
                             GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                            sos_btn_event = false;
                             Trace(1,"send location to server success");
                             Trace(1,"response:%s",buffer);
+                            snprintf(buffer,sizeof(buffer),"close");
+                            UART_Write(UART1,buffer,strlen(buffer));
+                            UART_Write(UART1,"\r\n\r\n",4);
                         }
                 } else {
-                    Trace(10,"[SOS] NO INTERNET");
-                    // restart for gprs connection in 1 second
-                    PM_Restart();
+                        Trace(10,"[SOS] NO INTERNET");
+                        Trace(10,"GPRS CONNECTION RESTART IN 4 SECONDS");
+                        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
+                        GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                        OS_Sleep(1000);
+                        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
+                        GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                        OS_Sleep(1000);
+                        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
+                        GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                        OS_Sleep(1000);
+                        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
+                        GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                        OS_Sleep(1000);
+                        // restart for gprs connection in 1 second
+                        PM_Restart();
                 }
-            PM_ShutDown();
+                PM_SetSysMinFreq(PM_SYS_FREQ_13M); // performance 13 mhz --> v1.4
+             //PM_SleepMode(true); --> v1.3
         } else {
+            count++;
+            Trace(10,"COUNTER : %d",count); // add counter in v1.3 (stand by mode)
             Trace(10,"NO FIX");
-            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
-            OS_Sleep(400);
-            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
-        }
-        
-            /*
-            // v 1.1 sos button click event
-            if(BTN_STATE == GPIO_LEVEL_LOW)
-            {
-                 GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
-                // first check gprs(internet) connection
-                if(status)
-                {
+            if(count > 99){ // v1.4 gps time out state;
+                Trace(10,"GPS TIME OUT RESTART AGAIN !! EMEGENCY !!");
+                 if(status)
+                {   
 
+                    // v1.4 set gps time state to 0
+                     GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
                     // gprs connection is pretty fine send data to cloud
                       if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer)) < 0)
                         Trace(1,"send location to server fail");
                       else
                         {
                             GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                            sos_btn_event = false;
                             Trace(1,"send location to server success");
                             Trace(1,"response:%s",buffer);
+                            count = 0;
+
+                            Trace(10, "GPS TIME OUT STATE TO 0");
                         }
                 } else {
-                    Trace(10,"[SOS] NO INTERNET");
-                    // restart for gprs connection in 1 second
-                    PM_Restart();
+                    // v1.4 restart gprs connection
+                        Trace(10,"[SOS] NO INTERNET");
+                        Trace(10,"GPRS CONNECTION RESTART IN 4 SECONDS");
+                        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
+                        GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                        OS_Sleep(1000);
+                        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
+                        GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                        OS_Sleep(1000);
+                        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
+                        GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                        OS_Sleep(1000);
+                        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
+                        GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                        OS_Sleep(1000);
+                        // restart for gprs connection in 1 second
+                        PM_Restart();
                 }
-            } 
+            }
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+            OS_Sleep(400);
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+        }
+           } // check lat and long error location 
+        }
+        // v 1.3 stand by mode
+
+        /*
+        *v1.2 gps auto off saving mode
+        */
+        //     if(isFixed >=3){
+        //          if(status)
+        //         {
+        //              GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+        //             // gprs connection is pretty fine send data to cloud
+        //               if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer)) < 0)
+        //                 Trace(1,"send location to server fail");
+        //               else
+        //                 {
+        //                     GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+        //                     Trace(1,"send location to server success");
+        //                     Trace(1,"response:%s",buffer);
+        //                 }
+        //         } else {
+        //             Trace(10,"[SOS] NO INTERNET");
+        //             // restart for gprs connection in 1 second
+        //             PM_Restart();
+        //         }
+        //     PM_ShutDown();
+        // } else {
+        //     Trace(10,"NO FIX");
+        //     GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+        //     OS_Sleep(400);
+        //     GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+        // }
+
+
+            
+            // v 1.1 sos button click event
+            // if(BTN_STATE == GPIO_LEVEL_LOW)
+            // {
+            //      GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+            //     // first check gprs(internet) connection
+            //     if(status)
+            //     {
+
+            //         // gprs connection is pretty fine send data to cloud
+            //           if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer)) < 0)
+            //             Trace(1,"send location to server fail");
+            //           else
+            //             {
+            //                 GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+            //                 Trace(1,"send location to server success");
+            //                 Trace(1,"response:%s",buffer);
+            //             }
+            //     } else {
+            //         Trace(10,"[SOS] NO INTERNET");
+            //         // restart for gprs connection in 1 second
+            //         PM_Restart();
+            //     }
+            // } 
             // v 1.1 button click 
-            */
+            
         }
     OS_Sleep(500);
     }
 }
+
+
 
 void power_status_led(void* param)
 {
