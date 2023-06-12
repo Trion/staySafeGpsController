@@ -20,6 +20,10 @@
 #include "api_hal_gpio.h"
 #include "sdk_init.h"
 
+#include "cJSON.h"
+#include "tiny-json.h"
+#include "assert.h"
+
 
 
 /***
@@ -66,6 +70,8 @@ char cell_tower_path_buffer[1024];
 char buffer_tower[1000];
 int buffer_tower_len = sizeof(buffer_tower);
 int cell_tower_path_buffer_len = sizeof(cell_tower_path_buffer);
+
+char cell_request_path[1024];
 
 
 
@@ -172,51 +178,40 @@ void EventDispatch(API_Event_t* pEvent)
         {
             number = pEvent->param1;
             location = (Network_Location_t*)pEvent->pParam1;
-            int percent =0;
             Trace(2,"network cell infomation,serving cell number:1, neighbor cell number:%d",number-1);
-            Trace(2,"***********************************");
             for(int i=0;i<number;++i)
             {
-                lbs_count++;
-                // snprintf(MCC,sizeof(MCC),"%d%d%d", location[i].sMcc[0], location[i].sMcc[1], location[i].sMcc[2]);
-                // snprintf(MNC,sizeof(MNC),"%d",location[i].sMnc[1]);
-                // snprintf(LAC,sizeof(LAC),"%d",location[i].sLac);
-                // snprintf(CELLID,sizeof(CELLID),"%d",location[i].sCellID);
-                // if(location[i].iRxLev <= -100){
-                //     percent = 0; 
-                // } else if(location[i].iRxLev >= -50){
-                //     percent = 100;
-                // } else {
-                //     percent = 2 * (location[i].iRxLev + 100);
-                // }
                 Trace(2,"cell %d info:%d%d%d,%d%d%d,%d,%d,%d,%d,%d,%d",i,
                 location[i].sMcc[0], location[i].sMcc[1], location[i].sMcc[2], 
                 location[i].sMnc[0], location[i].sMnc[1], location[i].sMnc[2],
                 location[i].sLac, location[i].sCellID, location[i].iBsic,
-                percent, location[i].iRxLevSub, location[i].nArfcn);
-                Trace(10,"COUNT%d",lbs_count);
-                snprintf(cell_tower_path_buffer,cell_tower_path_buffer_len,"/geolocation/cell?v=1.1&data=open&mcc=%d%d%d&mnc=%d&lac=%d&cellid=%d", location[i].sMcc[0],location[i].sMcc[1], location[i].sMcc[2],location[i].sMnc[1],location[i].sLac,location[i].sCellID);
-                Trace(10,cell_tower_path_buffer);
+                location[i].iRxLev, location[i].iRxLevSub, location[i].nArfcn);
             }
 
-
-
-            if(++lbsCount>5) // change counting time to 3
+              int latitudeLbs = 0;
+              int longitudeLbs =0;
+            if((latitudeLbs == 0) &&(longitudeLbs == 0))//not get location from server, try again
+            {
+                if(++lbsCount>=2)
                 {
                     lbsCount = 0;
-                    Trace(1,"try 6 times to get location from lbs but fail!!");
+                    Trace(1,"try 6 times to get location from lbs but fail!! %d", lbsCount);
                     OS_ReleaseSemaphore(semGetCellInfo);
                     break;
                 }
-                 if(!Network_GetCellInfoRequst())
-                 {
+                if(!Network_GetCellInfoRequst())
+                {
                     Trace(1,"network get cell info fail");
-                     OS_ReleaseSemaphore(semGetCellInfo);
-                 }
-                 break;
-            flag_lbs = true;
+                    OS_ReleaseSemaphore(semGetCellInfo);
+                }
+                break;
+            }
+            OS_ReleaseSemaphore(semGetCellInfo);
+            lbsCount = 0;
+          
             break;
         }
+        
 
         default:
             break;
@@ -225,12 +220,12 @@ void EventDispatch(API_Event_t* pEvent)
 
 
 //http post with inteli server 
-int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint16_t bodyLen, char* retBuffer, int bufferLen)
+int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint16_t bodyLen, char* retBuffer, int bufferLen, bool check_lbs)
 {
     uint8_t ip[16];
     bool flag = false;
     uint16_t recvLen = 0;
-
+    int retBufferLen = bufferLen;
     //connect server
     memset(ip,0,sizeof(ip));
     if(DNS_GetHostByName2(domain,ip) != 0)
@@ -246,10 +241,15 @@ int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint1
         Trace(2,"malloc fail");
         return -1;
     }
-
-    snprintf(temp, 2048, "POST %s HTTP/1.1\r\nHost:%s\r\nx-access-token:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2Mzk2ZmZiMWQ5NmZjNzc5MzdhODc0ZWYiLCJpYXQiOjE2ODQ5ODUyMjB9.U3qHiJ-HuJQDmCYrdew80k9M77nkS042pBNerafmqbs\r\n\r\n",
+    if (!check_lbs)
+    {
+     snprintf(temp, 2048, "POST %s HTTP/1.1\r\nHost:%s\r\nx-access-token:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2Mzk2ZmZiMWQ5NmZjNzc5MzdhODc0ZWYiLCJpYXQiOjE2ODQ5ODUyMjB9.U3qHiJ-HuJQDmCYrdew80k9M77nkS042pBNerafmqbs\r\n\r\n",
                    path, domain);
-   
+    } else {
+         snprintf(temp, 2048, "POST %s HTTP/1.1\r\nContent-Type:application/json\r\nHost:%s\r\n\r\n",
+                   path, domain);
+    }
+
     char* pData = temp;
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if(fd < 0){
@@ -257,7 +257,7 @@ int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint1
         OS_Free(temp);
         return -1;
     }
-    // Trace(2,"fd:%d",fd);
+    Trace(2,"fd:%d",fd);
 
     struct sockaddr_in sockaddr;
     memset(&sockaddr,0,sizeof(sockaddr));
@@ -288,7 +288,7 @@ int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint1
         close(fd);
         return -1;
     }
-    // Trace(2,"socket send success");
+    Trace(2,"socket send success");
 
     struct fd_set fds;
     struct timeval timeout={12,0};
@@ -297,7 +297,7 @@ int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint1
     while(!flag)
     {
         ret = select(fd+1,&fds,NULL,NULL,&timeout);
-        // Trace(2,"select return:%d",ret);
+         Trace(2,"select return:%d",ret);
         switch(ret)
         {
             case -1:
@@ -311,8 +311,12 @@ int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint1
             default:
                 if(FD_ISSET(fd,&fds))
                 {
-                    memset(retBuffer,0,bufferLen);
-                    ret = recv(fd,retBuffer,bufferLen,0);
+                    // memset(retBuffer,0,bufferLen);
+                    // ret = recv(fd,retBuffer,bufferLen,0);
+                    Trace(1,"select return:%d",ret);
+                    memset(retBuffer+recvLen,0,retBufferLen-recvLen);
+                    ret = recv(fd,retBuffer+recvLen,retBufferLen-recvLen,0);
+                    Trace(1,"ret:%d",ret);
                     recvLen += ret;
                     if(ret < 0)
                     {
@@ -327,6 +331,7 @@ int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint1
                     }
                     else if(ret < 1352)
                     {
+                        Trace(1,"recv len:%d,data:%s",recvLen,retBuffer);
                         GPS_DEBUG_I("recv len:%d,data:%s",recvLen,retBuffer);
                         close(fd);
                         OS_Free(temp);
@@ -341,33 +346,83 @@ int Http_Post(const char* domain, int port,const char* path,uint8_t* body, uint1
     return -1;
 }
 
+bool callback_network_info(bool result){
+    if(result){
+          semGetCellInfo = OS_CreateSemaphore(0);
+            if(!Network_GetCellInfoRequst())
+                {
+                        Trace(1,"network get cell info fail");
+                }
+            OS_WaitForSemaphore(semGetCellInfo,OS_TIME_OUT_WAIT_FOREVER);
+            OS_DeleteSemaphore(semGetCellInfo);
+        semGetCellInfo = NULL;
+    } 
+    
+  
+}
 
+bool google_geolocation_get_route(int number){
+    switch (number)
+            {
+                Trace(10, "NETWORK CELL LIST : %d",number);
+                case 1 :
+                        snprintf(cell_tower_path_buffer,cell_tower_path_buffer_len,
+                        "/api/device-control/calculateLoc?mcc=%d%d%d&mnc=%d&radioType=%s&carrier=%s&considerIp=%d&cellTowers=%d;%d;%d", 
+                        location[0].sMcc[0], location[0].sMcc[1], location[0].sMcc[2],
+                        location[0].sMnc[1],"GSM","mpt",false,
+                        location[0].sCellID,location[0].sLac,location[0].iRxLev);
+                        Trace(10,cell_tower_path_buffer);
+                        return true;
+                break;
+                case 2 : 
+                        snprintf(cell_tower_path_buffer,cell_tower_path_buffer_len,
+                        "/api/device-control/calculateLoc?mcc=%d%d%d&mnc=%d&radioType=%s&carrier=%s&considerIp=%d&cellTowers=%d;%d;%d,%d;%d;%d", 
+                        location[0].sMcc[0], location[0].sMcc[1], location[0].sMcc[2],
+                        location[0].sMnc[1],"GSM","mpt",false,
+                        location[0].sCellID,location[0].sLac,location[0].iRxLev,
+                        location[1].sCellID,location[1].sLac,location[1].iRxLev);
+                        Trace(10,cell_tower_path_buffer);
+                        return true;
+                break;
+                case 3 :
+                        snprintf(cell_tower_path_buffer,cell_tower_path_buffer_len,
+                        "/api/device-control/calculateLoc?mcc=%d%d%d&mnc=%d&radioType=%s&carrier=%s&considerIp=%d&cellTowers=%d;%d;%d,%d;%d;%d,%d;%d;%d", 
+                        location[0].sMcc[0], location[0].sMcc[1], location[0].sMcc[2],
+                        location[0].sMnc[1],"GSM","mpt",false,
+                        location[0].sCellID,location[0].sLac,location[0].iRxLev,
+                        location[1].sCellID,location[1].sLac,location[1].iRxLev,
+                        location[2].sCellID,location[2].sLac,location[2].iRxLev);
+                        Trace(10,cell_tower_path_buffer);
+                        return true;
+                break;
+                case 4 :
+                        snprintf(cell_tower_path_buffer,cell_tower_path_buffer_len,
+                        "/api/device-control/calculateLoc?mcc=%d%d%d&mnc=%d&radioType=%s&carrier=%s&considerIp=%d&cellTowers=%d;%d;%d,%d;%d;%d,%d;%d;%d,%d;%d;%d", 
+                        location[0].sMcc[0], location[0].sMcc[1], location[0].sMcc[2],
+                        location[0].sMnc[1],"GSM","mpt",false,
+                        location[0].sCellID,location[0].sLac,location[0].iRxLev,
+                        location[1].sCellID,location[1].sLac,location[1].iRxLev,
+                        location[2].sCellID,location[2].sLac,location[2].iRxLev,
+                        location[3].sCellID,location[3].sLac,location[3].iRxLev);
+                        Trace(10,cell_tower_path_buffer);
+                        return true;
 
-
-
-
+            }
+}
 
 void gps_testTask(void *pData)
 {
     GPS_Info_t* gpsInfo = Gps_GetInfo();
-    //pinmode input for sos btn pin GPIO_PIN_29
     GPIO_config_t SOS_BTN =
     {
         .mode = GPIO_MODE_INPUT,
         .pin = GPIO_PIN_SOS,
         .defaultLevel = GPIO_LEVEL_HIGH,
     };
-    GPIO_LEVEL BTN_STATE = 0; // BTN_STATE is SOS BUTTON STATE
+    GPIO_LEVEL BTN_STATE = 0; 
     GPIO_Init(SOS_BTN); 
-    //wait for gprs register complete
-    //The process of GPRS registration network may cause the power supply voltage of GPS to drop, <-- should be carefully
-    //which resulting in GPS restart.
     while(!networkFlag)
     {
-        /*
-        * gprs connection restart button for billing state
-        * v1.4 30.5.2023
-        */
         GPIO_GetLevel(SOS_BTN,&BTN_STATE); 
         Trace(10,"GPRS BTN STATE : %d",BTN_STATE);
         if(BTN_STATE == GPIO_LEVEL_LOW){
@@ -393,20 +448,12 @@ void gps_testTask(void *pData)
     }
    
 
-    //open GPS hardware(UART2 open either)
+    
     GPS_Init();
     GPS_SaveLog(true,GPS_NMEA_LOG_FILE_PATH);
-    // if(!GPS_ClearLog())
-    //     Trace(1,"open file error, please check tf card");
     GPS_Open(NULL);
-
-
-    //wait for gps start up, or gps will not response command
     while(gpsInfo->rmc.latitude.value == 0)
         OS_Sleep(1000);
-    
-
-    // set gps nmea output interval as 10s
     for(uint8_t i = 0;i<5;++i)
     {
         bool ret = GPS_SetOutputInterval(10000);
@@ -415,14 +462,13 @@ void gps_testTask(void *pData)
             break;
         OS_Sleep(1000);
     }
-    //get version of gps firmware
     if(!GPS_GetVersion(buffer,150))
         Trace(1,"get gps firmware version fail");
     else
         Trace(1,"gps firmware version:%s",buffer);
+  
 
-    
-    //get location through LBS
+   //get location through LBS
     semGetCellInfo = OS_CreateSemaphore(0);
     if(!Network_GetCellInfoRequst())
     {
@@ -432,11 +478,7 @@ void gps_testTask(void *pData)
     OS_DeleteSemaphore(semGetCellInfo);
     semGetCellInfo = NULL;
 
-    //send location to GPS and update brdc GPD file
-    Trace(1,"do AGPS now");
-  
 
-    //set nmea output interval as 1s
     if(!GPS_SetOutputInterval(1000))
         Trace(1,"set nmea output interval fail");
     
@@ -447,7 +489,6 @@ void gps_testTask(void *pData)
     {
         if(isGpsOn)
         {
-            //show fix info
             uint8_t isFixed = gpsInfo->gsa[0].fix_type > gpsInfo->gsa[1].fix_type ?gpsInfo->gsa[0].fix_type:gpsInfo->gsa[1].fix_type;
             char* isFixedStr = NULL; 
             if(isFixed == 2)
@@ -461,53 +502,36 @@ void gps_testTask(void *pData)
             }
             else
                 isFixedStr = "no fix";
-
-            //convert unit ddmm.mmmm to degree(°) 
+ 
             int temp = (int)(gpsInfo->rmc.latitude.value/gpsInfo->rmc.latitude.scale/100);
             double latitude = temp+(double)(gpsInfo->rmc.latitude.value - temp*gpsInfo->rmc.latitude.scale*100)/gpsInfo->rmc.latitude.scale/60.0;
             temp = (int)(gpsInfo->rmc.longitude.value/gpsInfo->rmc.longitude.scale/100);
             double longitude = temp+(double)(gpsInfo->rmc.longitude.value - temp*gpsInfo->rmc.longitude.scale*100)/gpsInfo->rmc.longitude.scale/60.0;
 
-            
-            //you can copy ` latitude,longitude ` to http://www.gpsspg.com/maps.htm check location on map
-
             snprintf(buffer,sizeof(buffer),"GPS fix mode:%d, BDS fix mode:%d, fix quality:%d, satellites tracked:%d, gps sates total:%d, is fixed:%s, coordinate:WGS84, Latitude:%f, Longitude:%f, unit:degree,altitude:%f",gpsInfo->gsa[0].fix_type, gpsInfo->gsa[1].fix_type,
                                                                 gpsInfo->gga.fix_quality,gpsInfo->gga.satellites_tracked, gpsInfo->gsv[0].total_sats, isFixedStr, latitude,longitude,gpsInfo->gga.altitude);
-            //show in tracer
             Trace(1,buffer);
-            
-            //send to UART1
-            UART_Write(UART1,buffer,strlen(buffer));
-            UART_Write(UART1,"\r\n\r\n",4);
 
             //send to server
             char* requestPath = buffer2;
             uint8_t percent;
             uint16_t v = PM_Voltage(&percent);
             Trace(1,"power:%d %d",v,percent);
-
-            // check power status for charging
             if(percent<20){
                 Trace(10,"!!LOW POWER PLEASE CHARGE!!");
                  GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
                  OS_Sleep(200);
                  GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
             }
-      
-            memset(buffer,0,sizeof(buffer));
-            if(!INFO_GetIMEI(buffer))
-                Assert(false,"NO IMEI");
-            Trace(1,"device name:%s",buffer);
-            if(!Network_GetCellInfoRequst())
-                Trace(1,"network get cell info fail");
             snprintf(requestPath, sizeof(buffer2), "/api/device-control/645c55478a04726ce6575fa1/alert?lat=%f&lon=%f",latitude, longitude); // device id you can change here
-            // check internet connection every second
+         
             uint8_t status;
             GPIO_LEVEL BTN_STATE = 0; // BTN_STATE is SOS BUTTON STATE
             GPIO_GetLevel(SOS_BTN,&BTN_STATE);  //v1.4  add gprs restart connection state
             Trace(10,"SOS BTN STATE : %d",BTN_STATE);
             Network_GetActiveStatus(&status); // get active status for gprs network connection
-            if(!status){
+
+        if(!status){
                 GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
                 OS_Sleep(200);
                 GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
@@ -530,70 +554,107 @@ void gps_testTask(void *pData)
                 OS_Sleep(1000);
                 PM_Restart();
         }       
-    }
-        /**
-        * cell tower location finder
-        * cell tower triangulation (circule union point)
-        * https://api.mylnikov.org/geolocation/cell?v=1.1&data=open&mcc=414&mnc=1&lac=310&cellid=16851
-        * if(Http_Get(SERVER_IP,SERVER_PORT,SERVER_PATH,buffer,&len) < 0)
-        **/
-
-                
-             
-                 
-           
-        
-        /**
-         * LONG PRESS EVENT
-         * 
-         **/
-        if(BTN_STATE == GPIO_LEVEL_HIGH)
+    } // check the internet connection
+    
+  
+    
+    if(BTN_STATE == GPIO_LEVEL_HIGH)
              btn_active = true;  
-        
-
-        // END LONG PERSS EVNET
         if(BTN_STATE == GPIO_LEVEL_LOW){
            clock_t timeStart = clock();
            btn_press_time++;
-          // Trace(12,"loop test spent time:%d,press time:%d",(int)((timeEnd-timeStart)/CLOCKS_PER_MSEC),btn_press_time);
-            //PM_SleepMode(false); --> 1.3
            PM_SetSysMinFreq(PM_SYS_FREQ_312M); // high performance --> v1.4
            sos_btn_event = true;
-             clock_t timeEnd   = clock();
-         
-        } else {
-            // count++;
-            // if(count == 2){
-            // //send to UART1
-            // snprintf(buffer,sizeof(buffer),"close");
-            // UART_Write(UART1,buffer,strlen(buffer));
-            // UART_Write(UART1,"\r\n\r\n",4);
-            // }
-        }
+        clock_t timeEnd   = clock();
+        } // check the sos button event 
+
+
         // v 1.3 stand by mode when btn pressed , finding gps signal , gps signal is found send gps data to cloud.
-        if(sos_btn_event == true){ 
-                if(Http_Get(CELL_TOWER_SERVER,NULL,cell_tower_path_buffer,buffer_tower,buffer_tower_len)<0) 
-                   {
-                    Trace(1,"HTTP GET FAIL");
-                   }
-                   else {
-                    Trace(1, "HTTP GET SUCCESS,ret: %s",buffer_tower);
-                     
-                   }
-           
+        if(sos_btn_event == true){
+            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+            callback_network_info(true);
+            Trace(1,"CELL NUMBER SCHEDULER CLICK EVENT: %d",number);
+            for(int i=0;i<number;++i)
+                    {
+                        Trace(2,"[GPS] cell %d info:%d%d%d,%d%d%d,%d,%d,%d,%d,%d,%d",i,
+                        location[i].sMcc[0], location[i].sMcc[1], location[i].sMcc[2], 
+                        location[i].sMnc[0], location[i].sMnc[1], location[i].sMnc[2],
+                        location[i].sLac, location[i].sCellID, location[i].iBsic,
+                        location[i].iRxLev, location[i].iRxLevSub, location[i].nArfcn);
+                    }
+
+    if(google_geolocation_get_route(number));
+        Trace(1,"[GET GPS] recieve");
+
             if((latitude == 0.00 && longitude == 0.00)||(latitude == 90.0 && longitude == 0.00)){
+
+            if(Http_Post(SERVER_IP,SERVER_PORT,cell_tower_path_buffer,NULL,0,buffer_tower,sizeof(buffer_tower) ,true) < 0)
+                    Trace(1,"send location to server fail");
+            else
+                    {
+                        Trace(1,"http get success,ret:%s",buffer_tower);
+                        char* index0 = strstr(buffer_tower,"\r\n\r\n");
+                        char temp = index0[4];
+                        index0[4] = '\0';
+                        Trace(1,"http response header:%s",buffer_tower);
+                        index0[4] = temp;
+                        Trace(1,"http response body:%s",index0+4); 
+                        Trace(1,"show index : %s",index0+1);
+                        Trace(1,"INDEX : %s",index0+3);
+                        char geolocatoin[1024];
+                        snprintf(geolocatoin,sizeof(geolocatoin),"%s",index0+4);
+                        Trace(1,geolocatoin);
+                       
+
+                        json_t mem[32];
+                        json_t const* json = json_create(geolocatoin,mem,sizeof(mem) / sizeof *mem);
+                        if(!json) Trace(1,"error json create");
+                        else Trace(1,"json create");
+
+                        json_t const* locatoin_ = json_getProperty(json,"location");
+                        if(locatoin_ == NULL) Trace(1,"locatoin retrieve error");
+                        char const* lbs_latitude = json_getPropertyValue(locatoin_,"lat");
+                        Trace(1,"Latitude : %s",lbs_latitude);
+                        char const* lbs_longitude = json_getPropertyValue(locatoin_,"lng");
+                        Trace(1,"Longitude : %s",lbs_longitude);
+                        char const* accuracy_value = json_getPropertyValue(json,"accuracy");
+                        Trace(1,"Accuaracy : %s",accuracy_value);
+                   
+
+                        if(status) {
+                        GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                        snprintf(cell_request_path, sizeof(buffer2), "/api/device-control/645c55478a04726ce6575fa1/alert?lat=%s&lon=%s",lbs_latitude,lbs_longitude);
+                   
+
+                      if(Http_Post(SERVER_IP,SERVER_PORT,cell_request_path,NULL,0,buffer,sizeof(buffer),false) < 0)
+                        Trace(1,"send location to server fail");
+                      else
+                        {
+                            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                            sos_btn_event = false;
+                            Trace(1,"send location to server success");
+                            Trace(1,"response:%s",buffer);
+                            snprintf(buffer,sizeof(buffer),"close");
+                            UART_Write(UART1,buffer,strlen(buffer));
+                            UART_Write(UART1,"\r\n\r\n",4);
+                        }
+                    } else {
+                        Trace(10,"no internet");
+                    }
+               
+        } // lbs location 
             Trace(10,"GPS ERROR");
             GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
             OS_Sleep(100);
             GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
-           } else {
+           } // lat and long  are zero 
+            else  {
             if(isFixed >=2){
                  if(status)
                 {   
-                    count = 0; // v1.4 set gps time state to 0
+                     count = 0; 
                      GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
-                    // gprs connection is pretty fine send data to cloud
-                      if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer)) < 0)
+                      if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer),false) < 0)
                         Trace(1,"send location to server fail");
                       else
                         {
@@ -623,8 +684,8 @@ void gps_testTask(void *pData)
                         // restart for gprs connection in 1 second
                         PM_Restart();
                 }
-                PM_SetSysMinFreq(PM_SYS_FREQ_13M); // performance 13 mhz --> v1.4
-             //PM_SleepMode(true); --> v1.3
+                PM_SetSysMinFreq(PM_SYS_FREQ_13M); 
+           
         } else {
             count++;
             Trace(10,"COUNTER : %d",count); // add counter in v1.3 (stand by mode)
@@ -632,12 +693,70 @@ void gps_testTask(void *pData)
             if(count > 99){ // v1.4 gps time out state;
                 Trace(10,"GPS TIME OUT RESTART AGAIN !! EMEGENCY !!");
                  if(status)
-                {   
+                { 
+                         GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                if(Http_Post(SERVER_IP,SERVER_PORT,cell_tower_path_buffer,NULL,0,buffer_tower,sizeof(buffer_tower) ,true) < 0)
+                    Trace(1,"send location to server fail");
+            else
+                    {
+                        Trace(1,"http get success,ret:%s",buffer_tower);
+                        char* index0 = strstr(buffer_tower,"\r\n\r\n");
+                        char temp = index0[4];
+                        index0[4] = '\0';
+                        Trace(1,"http response header:%s",buffer_tower);
+                        index0[4] = temp;
+                        Trace(1,"http response body:%s",index0+4); 
+                        Trace(1,"show index : %s",index0+1);
+                        Trace(1,"INDEX : %s",index0+3);
+                        char geolocatoin[1024];
+                        snprintf(geolocatoin,sizeof(geolocatoin),"%s",index0+4);
+                        Trace(1,geolocatoin);
+                       
+
+                        json_t mem[32];
+                        json_t const* json = json_create(geolocatoin,mem,sizeof(mem) / sizeof *mem);
+                        if(!json) Trace(1,"error json create");
+                        else Trace(1,"json create");
+
+                        json_t const* locatoin_ = json_getProperty(json,"location");
+                        if(locatoin_ == NULL) Trace(1,"locatoin retrieve error");
+                        char const* lbs_latitude = json_getPropertyValue(locatoin_,"lat");
+                        Trace(1,"Latitude : %s",lbs_latitude);
+                        char const* lbs_longitude = json_getPropertyValue(locatoin_,"lng");
+                        Trace(1,"Longitude : %s",lbs_longitude);
+                        char const* accuracy_value = json_getPropertyValue(json,"accuracy");
+                        Trace(1,"Accuaracy : %s",accuracy_value);
+                   
+
+                        if(status) {
+                        GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
+                        snprintf(cell_request_path, sizeof(buffer2), "/api/device-control/645c55478a04726ce6575fa1/alert?lat=%s&lon=%s",lbs_latitude,lbs_longitude);
+                      if(Http_Post(SERVER_IP,SERVER_PORT,cell_request_path,NULL,0,buffer,sizeof(buffer),false) < 0)
+                        Trace(1,"send location to server fail");
+                      else
+                        {
+                            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                            GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
+                            sos_btn_event = false;
+                            Trace(1,"send location to server success");
+                            Trace(1,"response:%s",buffer);
+                            snprintf(buffer,sizeof(buffer),"close");
+                            UART_Write(UART1,buffer,strlen(buffer));
+                            UART_Write(UART1,"\r\n\r\n",4);
+                        }
+                    } else {
+                        Trace(10,"no internet");
+                    }
+               
+        }
+
+        OS_Sleep(500);
+        Trace(1,"DO NO FIX GPS SIGNAL : lat : %d, lng : %d",latitude,longitude);  
 
                     // v1.4 set gps time state to 0
                      GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
                     // gprs connection is pretty fine send data to cloud
-                      if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer)) < 0)
+                      if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer) ,false) < 0)
                         Trace(1,"send location to server fail");
                       else
                         {
@@ -668,92 +787,85 @@ void gps_testTask(void *pData)
                         // restart for gprs connection in 1 second
                         PM_Restart();
                 }
+                count = 0;
             }
             GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
             OS_Sleep(400);
             GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
-        }
-           } // check lat and long error location 
-        }
-        // v 1.3 stand by mode
-
-        /*
-        *v1.2 gps auto off saving mode
-        */
-        //     if(isFixed >=3){
-        //          if(status)
-        //         {
-        //              GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
-        //             // gprs connection is pretty fine send data to cloud
-        //               if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer)) < 0)
-        //                 Trace(1,"send location to server fail");
-        //               else
-        //                 {
-        //                     GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
-        //                     Trace(1,"send location to server success");
-        //                     Trace(1,"response:%s",buffer);
-        //                 }
-        //         } else {
-        //             Trace(10,"[SOS] NO INTERNET");
-        //             // restart for gprs connection in 1 second
-        //             PM_Restart();
-        //         }
-        //     PM_ShutDown();
-        // } else {
-        //     Trace(10,"NO FIX");
-        //     GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
-        //     OS_Sleep(400);
-        //     GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
-        // }
-
-
-            
-            // v 1.1 sos button click event
-            // if(BTN_STATE == GPIO_LEVEL_LOW)
-            // {
-            //      GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_HIGH);
-            //     // first check gprs(internet) connection
-            //     if(status)
-            //     {
-
-            //         // gprs connection is pretty fine send data to cloud
-            //           if(Http_Post(SERVER_IP,SERVER_PORT,requestPath,NULL,0,buffer,sizeof(buffer)) < 0)
-            //             Trace(1,"send location to server fail");
-            //           else
-            //             {
-            //                 GPIO_Set(UPLOAD_DATA_LED,GPIO_LEVEL_LOW);
-            //                 Trace(1,"send location to server success");
-            //                 Trace(1,"response:%s",buffer);
-            //             }
-            //     } else {
-            //         Trace(10,"[SOS] NO INTERNET");
-            //         // restart for gprs connection in 1 second
-            //         PM_Restart();
-            //     }
-            // } 
-            // v 1.1 button click 
-            
-        }
+        } // fix 2d fix end 
+} // if(lat and long are zero)
+    } // end btn true 
+        } // end gps on 
     OS_Sleep(500);
-    }
+    } // end while 
 }
 
 
 
-void power_status_led(void* param)
+
+void LED_Blink(void* param)
 {
-   static int count = 0;
-    if(++count == 5)
+    static int count_ = 0;
+    if(++count_ == 5)
     {
-        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_HIGH);
+  
+
+    switch (number)
+            {
+                Trace(10, "NETWORK CELL LIST : %d",number);
+                case 1 :
+                        snprintf(cell_tower_path_buffer,cell_tower_path_buffer_len,
+                        "/api/device-control/calculateLoc?mcc=%d%d%d&mnc=%d&radioType=%s&carrier=%s&considerIp=%d&cellTowers=%d;%d;%d", 
+                        location[0].sMcc[0], location[0].sMcc[1], location[0].sMcc[2],
+                        location[0].sMnc[1],"GSM","mpt",false,
+                        location[0].sCellID,location[0].sLac,location[0].iRxLev);
+                          Trace(10,cell_tower_path_buffer);
+                break;
+                case 2 : 
+                        snprintf(cell_tower_path_buffer,cell_tower_path_buffer_len,
+                        "/api/device-control/calculateLoc?mcc=%d%d%d&mnc=%d&radioType=%s&carrier=%s&considerIp=%d&cellTowers=%d;%d;%d,%d;%d;%d", 
+                        location[0].sMcc[0], location[0].sMcc[1], location[0].sMcc[2],
+                        location[0].sMnc[1],"GSM","mpt",false,
+                        location[0].sCellID,location[0].sLac,location[0].iRxLev,
+                        location[1].sCellID,location[1].sLac,location[1].iRxLev);
+                          Trace(10,cell_tower_path_buffer);
+                break;
+                case 3 :
+                        snprintf(cell_tower_path_buffer,cell_tower_path_buffer_len,
+                        "/api/device-control/calculateLoc?mcc=%d%d%d&mnc=%d&radioType=%s&carrier=%s&considerIp=%d&cellTowers=%d;%d;%d,%d;%d;%d,%d;%d;%d", 
+                        location[0].sMcc[0], location[0].sMcc[1], location[0].sMcc[2],
+                        location[0].sMnc[1],"GSM","mpt",false,
+                        location[0].sCellID,location[0].sLac,location[0].iRxLev,
+                        location[1].sCellID,location[1].sLac,location[1].iRxLev,
+                        location[2].sCellID,location[2].sLac,location[2].iRxLev);
+                          Trace(10,cell_tower_path_buffer);
+                break;
+                case 4 :
+                        snprintf(cell_tower_path_buffer,cell_tower_path_buffer_len,
+                        "/api/device-control/calculateLoc?mcc=%d%d%d&mnc=%d&radioType=%s&carrier=%s&considerIp=%d&cellTowers=%d;%d;%d,%d;%d;%d,%d;%d;%d,%d;%d;%d", 
+                        location[0].sMcc[0], location[0].sMcc[1], location[0].sMcc[2],
+                        location[0].sMnc[1],"GSM","mpt",false,
+                        location[0].sCellID,location[0].sLac,location[0].iRxLev,
+                        location[1].sCellID,location[1].sLac,location[1].iRxLev,
+                        location[2].sCellID,location[2].sLac,location[2].iRxLev,
+                        location[3].sCellID,location[3].sLac,location[3].iRxLev);
+                        Trace(10,cell_tower_path_buffer);
+
+            }
+    semGetCellInfo = NULL;
     }
-    else if(count == 6)
+    else if(count_ == 6)
     {
-        GPIO_Set(SYSTEM_STATUS_LED,GPIO_LEVEL_LOW);
-        count = 0;
+       
+        count_ = 0;
     }
-    OS_StartCallbackTimer(gpsTaskHandle,1000,power_status_led,NULL);
+  //  OS_StartCallbackTimer(gpsTaskHandle,1000,LED_Blink,NULL);
 }
+
+
+
+
+
 
 void gps_MainTask(void *pData)
 {
@@ -789,7 +901,7 @@ void gps_MainTask(void *pData)
 
     OS_CreateTask(gps_testTask,
             NULL, NULL, MAIN_TASK_STACK_SIZE, MAIN_TASK_PRIORITY, 0, 0, MAIN_TASK_NAME);
-   // OS_StartCallbackTimer(gpsTaskHandle,1000,power_status_led,NULL);
+  //  OS_StartCallbackTimer(gpsTaskHandle,1000,LED_Blink,NULL);
     //Wait event
     while(1)
     {
