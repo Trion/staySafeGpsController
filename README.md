@@ -5,3 +5,11 @@ user can press the sos button , the device will send the last location of this d
 when a emergency situation you can press the sos button , the device will find the your location and phone number of your firend and family member, the device will send to (add phone number) via using sms, 
 sms template : 
   you custom message : your lattitude and longitute , format is google map location of your gps position
+  
+  ## Hardware Description
+    - Using RDA8955 chip and gps receiver chip 
+    - Firmware A9G/ GPRS_C_SDK
+    - Reference Base on the agps system
+    - Batter mah 1050 mili amp hours
+    - Stand By mode is min 10 hours , max 11 hours 
+    
