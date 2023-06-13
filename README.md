@@ -12,4 +12,7 @@ sms template :
     - Reference Base on the agps system
     - Batter mah 1050 mili amp hours
     - Stand By mode is min 10 hours , max 11 hours 
+  ## Concept Design 
+ 
+  <img src="https://github.com/Trion/staySafeGpsController/blob/main/sosDevice.jpg" width="600"/>
     
