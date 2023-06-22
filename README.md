@@ -1,4 +1,8 @@
 # staySafeGpsController
+ <div style="align:center">
+     <img src="https://github.com/Trion/staySafeGpsController/blob/main/Home.png" width="400"/>
+    </div>
+
 SOS Alert Device
     This device safely sos alert system for child, women, emergency person, taxi driver, other sector people, base on the gps system and lbs position system, 
 user can press the sos button , the device will send the last location of this deice to the other people (means you can add freind and family person phone number to this device) ,
